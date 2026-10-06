@@ -33,11 +33,20 @@ export class AuthService {
     if (!USERNAME_RE.test(username)) return { ok: false, error: 'Username must be 3-20 letters, digits or underscores.' };
     if (input.password.length < 8) return { ok: false, error: 'Password must be at least 8 characters.' };
 
+    // Same response whether or not the email exists, so signup can't be used to probe for accounts.
+    const existingByEmail = await this.db.get<{ id: number; verified_at: string | null }>(
+      'SELECT id, verified_at FROM users WHERE email = ?',
+      [email],
+    );
+    if (existingByEmail) {
+      // If unverified, resend a fresh verify token so they're not permanently locked out.
+      if (!existingByEmail.verified_at) await this.sendToken(existingByEmail.id, email, 'verify');
+      return { ok: true };
+    }
+
     if (await this.db.get('SELECT 1 FROM users WHERE username = ?', [username])) {
       return { ok: false, error: 'That username is taken.' };
     }
-    // Same response whether or not the email exists, so signup can't be used to probe for accounts.
-    if (await this.db.get('SELECT 1 FROM users WHERE email = ?', [email])) return { ok: true };
 
     const r = await this.db.run(
       'INSERT INTO users (email, username, password_hash, created_at) VALUES (?, ?, ?, ?)',

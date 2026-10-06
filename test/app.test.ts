@@ -88,6 +88,24 @@ describe('auth', () => {
     expect(h).not.toBe(await hashPassword('secret123'));
   });
 
+  it('resends a fresh verify token when signing up with an existing unverified email', async () => {
+    const t = await setup();
+    const email = 'newbie@example.com';
+    // First signup — no verification yet
+    await t.post('/signup', { email, username: 'newbie', password: 'password1' });
+    expect((await t.post('/login', { email, password: 'password1' })).status).toBe(401); // still unverified
+
+    // Second signup with same email — should resend a fresh verify link
+    await t.post('/signup', { email, username: 'newbie', password: 'password1' });
+    const allSent = t.mailer.sent.filter((m) => m.to === email);
+    expect(allSent).toHaveLength(2); // two verify emails sent
+
+    // Use the latest (fresh) token to verify
+    const freshToken = allSent.at(-1)!.text.match(/\/verify\/(\S+)/)![1];
+    expect((await t.get(`/verify/${freshToken}`)).status).toBe(200);
+    expect((await t.post('/login', { email, password: 'password1' })).status).toBe(302); // now works
+  });
+
   it('requires email verification, and supports password reset via emailed link', async () => {
     const t = await setup();
     await t.post('/signup', { email: 'a@example.com', username: 'alice', password: 'password1' });
