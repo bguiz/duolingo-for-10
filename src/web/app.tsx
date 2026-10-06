@@ -40,7 +40,7 @@ export function createApp(deps: Deps) {
     await next();
   });
 
-  const page = (c: any, title: string, body: any, status: 200 | 400 | 401 | 404 | 409 = 200) =>
+  const page = (c: any, title: string, body: any, status: 200 | 400 | 401 | 404 | 409 | 429 = 200) =>
     c.html(<Layout title={title} user={c.get('user')}>{body}</Layout>, status);
   const requireUser = (c: any): User | null => c.get('user');
   const clientIp = (c: any): string =>
