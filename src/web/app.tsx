@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { csrf } from 'hono/csrf';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { User } from '../auth/service';
+import { RateLimiter } from '../auth/ratelimit';
 import { type Period, utcDay } from '../domain/dates';
 import { getLeaderboard } from '../domain/leaderboard';
 import { effectiveStreak } from '../domain/scoring';
@@ -18,7 +19,18 @@ export const GENERATE_WINDOW_MS = 60 * 60 * 1000;
 
 type Env = { Variables: { user: User | null } };
 
+/** Maximum body size for auth form posts (prevents huge password/email DoS). */
+const AUTH_BODY_LIMIT = 4096;
+
 export function createApp(deps: Deps) {
+  // Rate limiters: per-IP for broad protection, per-email for targeted account protection.
+  // Created inside createApp so each app instance (e.g. in tests) has independent counters.
+  const loginIpLimiter = new RateLimiter(10, 15 * 60 * 1000);    // 10 per IP per 15 min
+  const loginEmailLimiter = new RateLimiter(5, 15 * 60 * 1000);   // 5 per email per 15 min
+  const signupIpLimiter = new RateLimiter(5, 60 * 60 * 1000);     // 5 per IP per hour
+  const forgotIpLimiter = new RateLimiter(5, 60 * 60 * 1000);     // 5 per IP per hour
+  const forgotEmailLimiter = new RateLimiter(3, 60 * 60 * 1000);  // 3 per email per hour
+
   const app = new Hono<Env>();
   const secure = deps.baseUrl.startsWith('https://');
 
@@ -31,6 +43,8 @@ export function createApp(deps: Deps) {
   const page = (c: any, title: string, body: any, status: 200 | 400 | 401 | 404 | 409 = 200) =>
     c.html(<Layout title={title} user={c.get('user')}>{body}</Layout>, status);
   const requireUser = (c: any): User | null => c.get('user');
+  const clientIp = (c: any): string =>
+    (c.req.header('x-forwarded-for') ?? 'unknown').split(',')[0].trim();
 
   const streakFor = async (userId: number) => {
     const s = await deps.db.get<{ streak: number; last_active_day: string | null }>('SELECT streak, last_active_day FROM user_stats WHERE user_id = ?', [userId]);
@@ -54,6 +68,8 @@ export function createApp(deps: Deps) {
   // ---- auth ----
   app.get('/signup', (c) => page(c, 'Sign up', <SignupPage />));
   app.post('/signup', async (c) => {
+    if (Number(c.req.header('content-length') ?? 0) > AUTH_BODY_LIMIT) return c.text('Request too large.', 413 as any);
+    if (!signupIpLimiter.check(clientIp(c))) return page(c, 'Sign up', <SignupPage error="Too many requests. Please wait before trying again." />, 429);
     const b = await c.req.parseBody();
     const r = await deps.auth.signup({ email: String(b.email ?? ''), username: String(b.username ?? ''), password: String(b.password ?? '') });
     return r.ok ? page(c, 'Sign up', <SignupPage done />) : page(c, 'Sign up', <SignupPage error={r.error} />, 400);
@@ -68,8 +84,13 @@ export function createApp(deps: Deps) {
 
   app.get('/login', (c) => page(c, 'Log in', <LoginPage />));
   app.post('/login', async (c) => {
+    if (Number(c.req.header('content-length') ?? 0) > AUTH_BODY_LIMIT) return c.text('Request too large.', 413 as any);
+    const ip = clientIp(c);
+    if (!loginIpLimiter.check(ip)) return page(c, 'Log in', <LoginPage error="Too many requests. Please wait before trying again." />, 429);
     const b = await c.req.parseBody();
-    const r = await deps.auth.login(String(b.email ?? ''), String(b.password ?? ''));
+    const email = String(b.email ?? '');
+    if (!loginEmailLimiter.check(email.toLowerCase())) return page(c, 'Log in', <LoginPage error="Too many attempts for this account. Please wait before trying again." />, 429);
+    const r = await deps.auth.login(email, String(b.password ?? ''));
     if (r === null) return page(c, 'Log in', <LoginPage error="Wrong email or password." />, 401);
     if (r === 'unverified') return page(c, 'Log in', <LoginPage error="Please verify your email first (check your inbox)." />, 401);
     setCookie(c, SESSION_COOKIE, r.token, { httpOnly: true, sameSite: 'Lax', secure, path: '/', maxAge: 30 * 86400 });
@@ -83,8 +104,13 @@ export function createApp(deps: Deps) {
 
   app.get('/forgot', (c) => page(c, 'Reset password', <ForgotPage />));
   app.post('/forgot', async (c) => {
+    if (Number(c.req.header('content-length') ?? 0) > AUTH_BODY_LIMIT) return c.text('Request too large.', 413 as any);
+    const ip = clientIp(c);
+    if (!forgotIpLimiter.check(ip)) return page(c, 'Reset password', <ForgotPage done />); // silent to not leak info
     const b = await c.req.parseBody();
-    await deps.auth.requestPasswordReset(String(b.email ?? ''));
+    const email = String(b.email ?? '');
+    if (!forgotEmailLimiter.check(email.toLowerCase())) return page(c, 'Reset password', <ForgotPage done />); // silent
+    await deps.auth.requestPasswordReset(email);
     return page(c, 'Reset password', <ForgotPage done />);
   });
   app.get('/reset/:token', async (c) => {
