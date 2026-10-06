@@ -2,6 +2,13 @@ import type { Db } from '../db/types';
 import type { Mailer } from '../mail/types';
 import { hashPassword, hashToken, newToken, verifyPassword } from './crypto';
 
+/** Maximum lengths to bound PBKDF2 cost and storage. */
+export const MAX_PASSWORD_LENGTH = 128;
+export const MAX_EMAIL_LENGTH = 254;
+
+/** A pre-computed dummy hash used to equalise login timing when no account is found. */
+const DUMMY_HASH = hashPassword('__dummy__');
+
 export interface User {
   id: number;
   email: string;
@@ -29,9 +36,11 @@ export class AuthService {
   async signup(input: { email: string; username: string; password: string }): Promise<SignupResult> {
     const email = input.email.trim().toLowerCase();
     const username = input.username.trim();
+    if (email.length > MAX_EMAIL_LENGTH) return { ok: false, error: 'Email address is too long.' };
     if (!EMAIL_RE.test(email)) return { ok: false, error: 'Enter a valid email address.' };
     if (!USERNAME_RE.test(username)) return { ok: false, error: 'Username must be 3-20 letters, digits or underscores.' };
     if (input.password.length < 8) return { ok: false, error: 'Password must be at least 8 characters.' };
+    if (input.password.length > MAX_PASSWORD_LENGTH) return { ok: false, error: `Password must be at most ${MAX_PASSWORD_LENGTH} characters.` };
 
     if (await this.db.get('SELECT 1 FROM users WHERE username = ?', [username])) {
       return { ok: false, error: 'That username is taken.' };
@@ -57,11 +66,18 @@ export class AuthService {
 
   /** Returns a session token on success; `unverified` if the password was right but the email is not verified. */
   async login(emailInput: string, password: string): Promise<{ token: string } | 'unverified' | null> {
+    if (password.length > MAX_PASSWORD_LENGTH) {
+      // Run dummy work so timing is the same as a real miss.
+      await verifyPassword(password.slice(0, MAX_PASSWORD_LENGTH), await DUMMY_HASH);
+      return null;
+    }
     const row = await this.db.get<{ id: number; password_hash: string; verified_at: string | null }>(
       'SELECT id, password_hash, verified_at FROM users WHERE email = ?',
       [emailInput.trim().toLowerCase()],
     );
-    if (!row || !(await verifyPassword(password, row.password_hash))) return null;
+    // Always run a hash comparison so response time doesn't reveal whether the account exists.
+    const hashToVerify = row?.password_hash ?? await DUMMY_HASH;
+    if (!await verifyPassword(password, hashToVerify) || !row) return null;
     if (!row.verified_at) return 'unverified';
     const token = newToken();
     await this.db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [
