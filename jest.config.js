@@ -5,5 +5,5 @@ module.exports = {
   modulePathIgnorePatterns: ['<rootDir>/.claude/'],
   transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: 'tsconfig.json', diagnostics: false, isolatedModules: true }] },
   collectCoverageFrom: ['src/**/*.{ts,tsx}', '!src/server.ts'], // server.ts is process bootstrap (listen/env), exercised by running the app
-  coverageThreshold: { global: { statements: 80, branches: 80, functions: 80, lines: 80 } },
+  coverageThreshold: { global: { statements: 90, branches: 90, functions: 90, lines: 90 } },
 };
