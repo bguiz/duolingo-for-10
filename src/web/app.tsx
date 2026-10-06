@@ -40,7 +40,7 @@ export function createApp(deps: Deps) {
     await next();
   });
 
-  const page = (c: any, title: string, body: any, status: 200 | 400 | 401 | 404 | 429 = 200) =>
+  const page = (c: any, title: string, body: any, status: 200 | 400 | 401 | 404 | 409 = 200) =>
     c.html(<Layout title={title} user={c.get('user')}>{body}</Layout>, status);
   const requireUser = (c: any): User | null => c.get('user');
   const clientIp = (c: any): string =>
@@ -139,7 +139,7 @@ export function createApp(deps: Deps) {
     }
     const cur = await deps.lessons.current(lesson);
     if (!cur) return null;
-    return <CardPanel lessonId={lesson.id} card={cur.card} index={cur.index} total={lesson.cardIds.length} feedback={feedback} />;
+    return <CardPanel lessonId={lesson.id} card={cur.card} index={cur.index} total={lesson.cardIds.length} attemptNo={cur.attemptNo} feedback={feedback} />;
   };
 
   app.post('/lessons', async (c) => {
@@ -162,8 +162,36 @@ export function createApp(deps: Deps) {
     const lessonId = Number(c.req.param('id'));
     const b = await c.req.parseBody();
     const words = String(b.answer ?? '').split('|').filter(Boolean);
+    const submittedCardId = b.cardId ? Number(b.cardId) : null;
+    const submittedAttemptNo = b.attemptNo ? Number(b.attemptNo) : null;
+
+    const lesson = await deps.lessons.get(user.id, lessonId);
+    if (!lesson) return c.text('Lesson not found.', 404);
+
+    // If the lesson is already finished, return the summary instead of an error.
+    if (lesson.completedAt) {
+      const view = await lessonView(user.id, lessonId);
+      return c.req.header('HX-Request') ? c.html(view as any) : page(c, 'Lesson', view);
+    }
+
+    const cur = await deps.lessons.current(lesson);
+    if (!cur) {
+      const view = await lessonView(user.id, lessonId);
+      return c.req.header('HX-Request') ? c.html(view as any) : page(c, 'Lesson', view);
+    }
+
+    // Reject stale-tab / double-submit mismatches.
+    if ((submittedCardId !== null && submittedCardId !== cur.card.id) ||
+        (submittedAttemptNo !== null && submittedAttemptNo !== cur.attemptNo)) {
+      const view = await lessonView(user.id, lessonId);
+      return c.req.header('HX-Request') ? c.html(view as any, 409) : page(c, 'Lesson', view, 409);
+    }
+
     const outcome = await deps.lessons.answer(user.id, lessonId, words);
-    if (!outcome) return c.text('Lesson not found or already finished.', 404);
+    if (!outcome) {
+      const view = await lessonView(user.id, lessonId);
+      return c.req.header('HX-Request') ? c.html(view as any) : page(c, 'Lesson', view);
+    }
 
     const feedback = outcome.kind === 'wrong' ? { ok: false, text: 'Not quite. Try again!' } : { ok: true, text: `Correct! +${outcome.points}` };
     const view = await lessonView(user.id, lessonId, feedback);

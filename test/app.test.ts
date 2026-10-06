@@ -203,6 +203,52 @@ describe('lessons, leaderboard and access rule', () => {
     expect(t.llm.calls).toHaveLength(0);
   });
 
+  it('double-submit on a finished lesson returns the summary panel, not a 404 error', async () => {
+    const t = await setup();
+    const cookie = await t.register('grace');
+    const { lessonId } = await t.playLesson(t.db, cookie);
+
+    // POST the answer endpoint again after lesson is complete — should return summary, not 404 text.
+    const res = await t.post(`/lessons/${lessonId}/answer`, { answer: 'anything' }, cookie, true);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toMatch(/Lesson complete|Perfect lesson/);
+    expect(body).not.toContain('not found');
+  });
+
+  it('stale-tab answer (wrong cardId) is rejected with 409 and returns the current panel', async () => {
+    const t = await setup();
+    const cookie = await t.register('henry');
+    const start = await t.post('/lessons', {}, cookie);
+    const lessonId = Number(start.headers.get('location')!.split('/').pop());
+    const lesson = (await t.db.get<{ card_ids: string }>('SELECT card_ids FROM lessons WHERE id = ?', [lessonId]))!;
+    const ids: number[] = JSON.parse(lesson.card_ids);
+
+    // Submit with a wrong cardId (simulate stale tab pointing at a previous card).
+    const res = await t.post(`/lessons/${lessonId}/answer`, { answer: 'anything', cardId: '99999', attemptNo: '1' }, cookie, true);
+    expect(res.status).toBe(409);
+    const body = await res.text();
+    // Response should be a card panel for the current lesson, not an error text.
+    expect(body).toContain('Fill in the blank');
+  });
+
+  it('double-submit (same cardId but wrong attemptNo) is rejected with 409', async () => {
+    const t = await setup();
+    const cookie = await t.register('iris');
+    const start = await t.post('/lessons', {}, cookie);
+    const lessonId = Number(start.headers.get('location')!.split('/').pop());
+    const lesson = (await t.db.get<{ card_ids: string }>('SELECT card_ids FROM lessons WHERE id = ?', [lessonId]))!;
+    const ids: number[] = JSON.parse(lesson.card_ids);
+    const firstCard = (await t.db.get<{ id: number; answer: string }>('SELECT id, answer FROM cards WHERE id = ?', [ids[0]]))!;
+
+    // Submit a correct answer once — advances to attemptNo 1 → card answered.
+    await t.post(`/lessons/${lessonId}/answer`, { answer: (JSON.parse(firstCard.answer) as string[]).join('|'), cardId: String(firstCard.id), attemptNo: '1' }, cookie, true);
+
+    // Re-submit the same card with attemptNo=1 (stale double-submit).
+    const res = await t.post(`/lessons/${lessonId}/answer`, { answer: (JSON.parse(firstCard.answer) as string[]).join('|'), cardId: String(firstCard.id), attemptNo: '1' }, cookie, true);
+    expect(res.status).toBe(409);
+  });
+
   it('spaced repetition: a second lesson starts with unseen cards, and mistakes come back first', async () => {
     const t = await setup();
     const cookie = await t.register('frank');

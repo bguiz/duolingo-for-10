@@ -186,7 +186,7 @@ export const HomePage = ({ user, streak, completed, board }: { user: User | null
 );
 
 /** The lesson "panel": swapped in place by HTMX after each answer. */
-export const CardPanel = ({ lessonId, card, index, total, feedback }: { lessonId: number; card: Card; index: number; total: number; feedback?: { ok: boolean; text: string } }) => {
+export const CardPanel = ({ lessonId, card, index, total, attemptNo, feedback }: { lessonId: number; card: Card; index: number; total: number; attemptNo: number; feedback?: { ok: boolean; text: string } }) => {
   const [before, after] = card.sentence.split('___');
   const bank = [...card.bank].sort(() => Math.random() - 0.5);
   return (
@@ -205,7 +205,9 @@ export const CardPanel = ({ lessonId, card, index, total, feedback }: { lessonId
       </div>
       <form hx-post={`/lessons/${lessonId}/answer`} hx-target="#panel" hx-swap="outerHTML" method="post" action={`/lessons/${lessonId}/answer`}>
         <input type="hidden" id="answer" name="answer" value="" />
-        <button id="check" type="submit" disabled>Check</button>
+        <input type="hidden" name="cardId" value={String(card.id)} />
+        <input type="hidden" name="attemptNo" value={String(attemptNo)} />
+        <button id="check" type="submit" disabled hx-disabled-elt="this">Check</button>
       </form>
     </div>
   );
